@@ -1,0 +1,142 @@
+# Self-healing agent: least-privilege RBAC, hardened pod, ClusterIP service.
+# Delete rights are granted only in the namespaces listed in the RoleBindings below
+# (keep them identical to WATCH_NAMESPACES).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: self-healer-sa
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: self-healer-read
+rules:
+- apiGroups: [""]
+  resources: ["pods", "nodes"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: self-healer-read
+subjects:
+- kind: ServiceAccount
+  name: self-healer-sa
+  namespace: kube-system
+roleRef:
+  kind: ClusterRole
+  name: self-healer-read
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: self-healer-delete
+  namespace: default
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: self-healer-delete
+  namespace: default
+subjects:
+- kind: ServiceAccount
+  name: self-healer-sa
+  namespace: kube-system
+roleRef:
+  kind: Role
+  name: self-healer-delete
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: self-healing-agent
+  namespace: kube-system
+  labels:
+    app: self-healer
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: self-healer
+  template:
+    metadata:
+      labels:
+        app: self-healer
+    spec:
+      serviceAccountName: self-healer-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+      - name: healing-engine
+        image: local-registry/k8s-self-healer:v1.0.0
+        imagePullPolicy: IfNotPresent
+        ports:
+        - name: http
+          containerPort: 8080
+        env:
+        - name: WATCH_NAMESPACES
+          value: "default"
+        - name: DRY_RUN
+          value: "false"
+        - name: MAX_HEALS
+          value: "5"
+        - name: HEAL_WINDOW
+          value: "10m"
+        readinessProbe:
+          httpGet: {path: /healthz, port: http}
+        livenessProbe:
+          httpGet: {path: /healthz, port: http}
+          initialDelaySeconds: 10
+        resources:
+          requests: {cpu: 50m, memory: 64Mi}
+          limits: {cpu: 200m, memory: 128Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: self-healer
+  namespace: kube-system
+  labels:
+    app: self-healer
+spec:
+  type: ClusterIP   # reach the dashboard with: kubectl -n kube-system port-forward svc/self-healer 8080:8080
+  selector:
+    app: self-healer
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+---
+# Lets Prometheus scrape /metrics (release label = Helm release name of kube-prometheus-stack)
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: self-healer
+  namespace: monitoring
+  labels:
+    release: prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames: ["kube-system"]
+  selector:
+    matchLabels:
+      app: self-healer
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s

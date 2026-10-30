@@ -1,0 +1,29 @@
+# Intentional crash used to validate self-healing (Deployment, so pods are recreated).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: intentional-crash-app
+  namespace: default
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: faulty-code
+  template:
+    metadata:
+      labels:
+        app: faulty-code
+    spec:
+      containers:
+      - name: broken-executor
+        image: alpine:3.22
+        command: ["sh", "-c", "echo 'Simulating error conditions...' && exit 1"]
+        resources:
+          requests: {cpu: 10m, memory: 16Mi}
+          limits: {cpu: 50m, memory: 32Mi}
+        securityContext:
+          allowPrivilegeEscalation: false
+          runAsNonRoot: true
+          runAsUser: 10001
+          capabilities:
+            drop: ["ALL"]

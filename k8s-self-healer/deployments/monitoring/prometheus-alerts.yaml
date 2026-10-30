@@ -1,0 +1,51 @@
+# apiVersion fixed (was "://coreos.com"). The release label must match the Helm release name
+# (snips show "prometheus-stack"); check: kubectl -n monitoring get prometheus -o jsonpath='{.items[0].spec.ruleSelector}'
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: self-healing-pod-alerts
+  namespace: monitoring
+  labels:
+    release: prometheus-stack
+spec:
+  groups:
+  - name: self-healing.rules
+    rules:
+    - alert: PodStuckInCrashLoop
+      expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
+      for: 30s
+      labels:
+        severity: warning
+      annotations:
+        summary: "Pod {{ $labels.pod }} is crash looping"
+        description: "Pod {{ $labels.pod }} in namespace {{ $labels.namespace }} is in CrashLoopBackOff. The self-healer will remediate it."
+    - alert: HealerActed
+      expr: increase(auto_healing_actions_total{action="delete",status="success"}[5m]) > 0
+      labels:
+        severity: warning
+      annotations:
+        summary: "Self-healer deleted unhealthy pods"
+        description: "The healer remediated {{ $value | printf \"%.0f\" }} pod(s) in the last 5 minutes."
+    - alert: HealingLimitReached
+      expr: increase(auto_healing_actions_total{action="delete",status="skipped"}[10m]) > 0
+      labels:
+        severity: critical
+      annotations:
+        summary: "Healer skipped a pod, manual action needed"
+        description: "A pod kept failing past the heal limit or has no controller. Investigate with kubectl."
+    - alert: NodeNotReady
+      expr: healer_nodes_not_ready > 0
+      for: 1m
+      labels:
+        severity: critical
+      annotations:
+        summary: "A node is not Ready"
+        description: "{{ $value }} node(s) report Ready != True."
+    - alert: HealerDown
+      expr: absent(up{job="self-healer"} == 1)
+      for: 2m
+      labels:
+        severity: critical
+      annotations:
+        summary: "Self-healing agent is not being scraped"
+        description: "No healthy self-healer target for 2 minutes."

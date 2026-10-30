@@ -1,0 +1,30 @@
+# Helm values. Create the webhook Secret first (never put the URL in this file):
+#   kubectl -n monitoring create secret generic slack-webhook --from-literal=url='<SLACK_WEBHOOK_URL>'
+# Apply (keeps earlier values):
+#   helm upgrade prometheus-stack prometheus-community/kube-prometheus-stack -n monitoring --reuse-values -f deployments/monitoring/alertmanager-config.yaml
+alertmanager:
+  alertmanagerSpec:
+    secrets:
+    - slack-webhook          # mounted at /etc/alertmanager/secrets/slack-webhook/
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: 'null'
+      group_by: ['alertname', 'namespace']
+      group_wait: 10s
+      group_interval: 1m
+      repeat_interval: 1h
+      routes:
+      - receiver: slack
+        matchers:
+        - alertname =~ "PodStuckInCrashLoop|HealerActed|HealingLimitReached|NodeNotReady|HealerDown"
+    receivers:
+    - name: 'null'
+    - name: slack
+      slack_configs:
+      - api_url_file: /etc/alertmanager/secrets/slack-webhook/url
+        channel: '#devops-alerts'
+        send_resolved: true
+        title: '[{{ .Status | toUpper }}] Kubernetes Auto-Healing Notification'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ "\n" }}{{ end }}'
